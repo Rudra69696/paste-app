@@ -1,123 +1,148 @@
-from flask import Flask, request, redirect, session, render_template_string
-import os, uuid
+from flask import Flask, request, jsonify, render_template_string
+import os, uuid, json, secrets
 
 app = Flask(__name__)
-app.secret_key = "secret123"
 
+# ---------------- FILES ----------------
+
+TOKENS_FILE = "tokens.json"
+PASTES_FILE = "pastes.json"
 PASTE_DIR = "pastes"
+
 os.makedirs(PASTE_DIR, exist_ok=True)
 
-# simple login
-USERS = {
-    "admin": "1234"
-}
+# ---------------- LOAD / SAVE ----------------
 
-# ---------------- LOGIN ----------------
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    error = ""
+def load_json(path):
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r") as f:
+        return json.load(f)
 
-    if request.method == "POST":
-        u = request.form.get("user")
-        p = request.form.get("pass")
+def save_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
 
-        if USERS.get(u) == p:
-            session["user"] = u
-            return redirect("/")
-        else:
-            error = "❌ Wrong username or password"
+TOKENS = load_json(TOKENS_FILE)
+PASTES = load_json(PASTES_FILE)
+
+# ---------------- AUTH ----------------
+
+@app.route("/api/auth", methods=["POST"])
+def auth():
+    token = secrets.token_hex(32)
+    TOKENS[token] = True
+    save_json(TOKENS_FILE, TOKENS)
+    return jsonify({"token": token})
+
+# ---------------- VERIFY ----------------
+
+@app.route("/api/verify", methods=["POST"])
+def verify():
+    token = request.json.get("token")
+    return jsonify({"valid": token in TOKENS})
+
+# ---------------- CREATE PASTE ----------------
+
+@app.route("/api/paste", methods=["POST"])
+def create_paste():
+    data = request.get_json()
+
+    token = data.get("token")
+    content = data.get("content")
+
+    if token not in TOKENS:
+        return jsonify({"error": "invalid token"}), 403
+
+    if not content:
+        return jsonify({"error": "empty content"}), 400
+
+    paste_id = str(uuid.uuid4())[:8]
+
+    with open(f"{PASTE_DIR}/{paste_id}.txt", "w", encoding="utf-8") as f:
+        f.write(content)
+
+    PASTES[paste_id] = True
+    save_json(PASTES_FILE, PASTES)
+
+    return jsonify({
+        "id": paste_id,
+        "raw": f"/raw/{paste_id}",
+        "view": f"/view/{paste_id}"
+    })
+
+# ---------------- RAW (DARK MODE) ----------------
+
+@app.route("/raw/<paste_id>")
+def raw(paste_id):
+    file_path = f"{PASTE_DIR}/{paste_id}.txt"
+
+    if not os.path.exists(file_path):
+        return "❌ Paste not found", 404
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
 
     return f"""
     <style>
-    body {{ background:#0f0f0f; color:white; font-family:sans-serif; text-align:center; }}
-    input {{ padding:10px; margin:5px; background:#1e1e1e; color:white; border:none; width:200px; }}
-    button {{ padding:10px; background:#333; color:white; border:none; }}
+    body {{
+        background:#0f0f0f;
+        color:#00ff88;
+        font-family: monospace;
+        padding:20px;
+        white-space: pre-wrap;
+    }}
     </style>
-
-    <h2>🔐 Login</h2>
-    <form method="POST">
-    <input name="user" placeholder="username"><br>
-    <input name="pass" type="password" placeholder="password"><br>
-    <button>Login</button>
-    </form>
-    <p style='color:red'>{error}</p>
+    {content}
     """
 
-# ---------------- LOGOUT ----------------
-@app.route("/logout")
-def logout():
-    session.clear()
-    return redirect("/login")
+# ---------------- VIEW (PRETTY UI) ----------------
 
-# ---------------- HOME ----------------
-@app.route("/", methods=["GET", "POST"])
-def home():
-    if "user" not in session:
-        return redirect("/login")
+@app.route("/view/<paste_id>")
+def view(paste_id):
+    file_path = f"{PASTE_DIR}/{paste_id}.txt"
 
-    if request.method == "POST":
-        content = request.form.get("content")
+    if not os.path.exists(file_path):
+        return "❌ Paste not found", 404
 
-        if not content or content.strip() == "":
-            return redirect("/")
-
-        paste_id = str(uuid.uuid4())[:8]
-        with open(f"{PASTE_DIR}/{paste_id}.txt", "w", encoding="utf-8") as f:
-            f.write(content)
-
-        return redirect("/")
-
-    files = os.listdir(PASTE_DIR)
-    pastes = [f.replace(".txt", "") for f in files]
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
 
     return render_template_string("""
     <style>
-    body { background:#0f0f0f; color:white; font-family:sans-serif; }
-    textarea { width:100%; height:150px; background:#1e1e1e; color:white; border:none; padding:10px; }
-    button { padding:10px; background:#333; color:white; border:none; margin-top:5px; }
-    a { color:cyan; text-decoration:none; }
-    .box { background:#1a1a1a; padding:10px; margin:10px 0; border-radius:6px; }
+    body {
+        background:#111;
+        color:white;
+        font-family:sans-serif;
+        padding:20px;
+    }
+    .box {
+        background:#1e1e1e;
+        padding:15px;
+        border-radius:8px;
+        white-space:pre-wrap;
+        font-family:monospace;
+    }
+    a {
+        color:#00ffcc;
+    }
     </style>
 
-    <h2>💀 My Paste</h2>
+    <h2>💀 Paste Viewer</h2>
 
-    <form method="POST">
-    <textarea name="content" placeholder="paste your code..."></textarea><br>
-    <button>Create Paste</button>
-    </form>
-
-    <h3>📄 Your Pastes</h3>
-
-    {% for p in pastes %}
-    <div class="box">
-        <a href="/raw/{{p}}" target="_blank">View</a> |
-        <a href="/delete/{{p}}">Delete</a>
-        <br>ID: {{p}}
-    </div>
-    {% endfor %}
+    <div class="box">{{content}}</div>
 
     <br>
-    <a href="/logout">Logout</a>
-    """, pastes=pastes)
+    <a href="/raw/{{id}}">View Raw</a>
+    """, content=content, id=paste_id)
 
-# ---------------- RAW ----------------
-@app.route("/raw/<id>")
-def raw(id):
-    try:
-        with open(f"{PASTE_DIR}/{id}.txt", "r", encoding="utf-8") as f:
-            return f.read()
-    except:
-        return "❌ Not found"
+# ---------------- HOME ----------------
 
-# ---------------- DELETE ----------------
-@app.route("/delete/<id>")
-def delete(id):
-    try:
-        os.remove(f"{PASTE_DIR}/{id}.txt")
-    except:
-        pass
-    return redirect("/")
+@app.route("/")
+def home():
+    return "💀 Paste API Running"
 
-# ---------------- START ----------------
+# ---------------- RUN ----------------
+
 if __name__ == "__main__":
     app.run()
