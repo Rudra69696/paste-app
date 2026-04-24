@@ -3,67 +3,111 @@ import os, uuid, json, secrets
 
 app = Flask(__name__)
 
-# ---------------- FILES ----------------
-
-TOKENS_FILE = "tokens.json"
-PASTES_FILE = "pastes.json"
+DATA_FILE = "data.json"
 PASTE_DIR = "pastes"
 
 os.makedirs(PASTE_DIR, exist_ok=True)
 
-# ---------------- LOAD / SAVE ----------------
+# ---------------- LOAD ----------------
 
-def load_json(path):
-    if not os.path.exists(path):
-        return {}
-    with open(path, "r") as f:
+def load():
+    if not os.path.exists(DATA_FILE):
+        return {"users": {}, "tokens": {}}
+    with open(DATA_FILE) as f:
         return json.load(f)
 
-def save_json(path, data):
-    with open(path, "w") as f:
+def save(data):
+    with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-TOKENS = load_json(TOKENS_FILE)
-PASTES = load_json(PASTES_FILE)
+DATA = load()
 
-# ---------------- AUTH ----------------
+# ---------------- WEB SIGNUP ----------------
 
-@app.route("/api/auth", methods=["POST"])
-def auth():
+@app.route("/", methods=["GET"])
+def home():
+    return """
+    <style>
+    body { background:#111; color:white; font-family:sans-serif; }
+    input { padding:10px; margin:5px; background:#222; color:white; border:none; }
+    button { padding:10px; background:#333; color:white; }
+    </style>
+
+    <h2>📝 Sign Up</h2>
+    <form action="/websignup" method="POST">
+        <input name="user"><br>
+        <input name="pass" type="password"><br>
+        <button>Create</button>
+    </form>
+    """
+
+@app.route("/websignup", methods=["POST"])
+def websignup():
+    user = request.form.get("user")
+    password = request.form.get("pass")
+
+    if user in DATA["users"]:
+        return "User exists"
+
     token = secrets.token_hex(32)
-    TOKENS[token] = True
-    save_json(TOKENS_FILE, TOKENS)
-    return jsonify({"token": token})
+
+    DATA["users"][user] = password
+    DATA["tokens"][token] = user
+    save(DATA)
+
+    return f"""
+    ✅ Account created<br>
+    Token:<br><b>{token}</b>
+    """
+
+# ---------------- API SIGNUP (ROBLOX) ----------------
+
+@app.route("/api/signup", methods=["POST"])
+def api_signup():
+    data = request.get_json()
+
+    user = data.get("user")
+    password = data.get("pass")
+
+    if not user or not password:
+        return jsonify({"error": "missing fields"}), 400
+
+    if user in DATA["users"]:
+        return jsonify({"error": "user exists"}), 400
+
+    token = secrets.token_hex(32)
+
+    DATA["users"][user] = password
+    DATA["tokens"][token] = user
+    save(DATA)
+
+    return jsonify({
+        "token": token
+    })
 
 # ---------------- VERIFY ----------------
 
 @app.route("/api/verify", methods=["POST"])
 def verify():
     token = request.json.get("token")
-    return jsonify({"valid": token in TOKENS})
+    return jsonify({"valid": token in DATA["tokens"]})
 
-# ---------------- CREATE PASTE ----------------
+# ---------------- PASTE ----------------
 
 @app.route("/api/paste", methods=["POST"])
-def create_paste():
+def paste():
     data = request.get_json()
 
     token = data.get("token")
     content = data.get("content")
 
-    if token not in TOKENS:
+    if token not in DATA["tokens"]:
         return jsonify({"error": "invalid token"}), 403
-
-    if not content:
-        return jsonify({"error": "empty content"}), 400
 
     paste_id = str(uuid.uuid4())[:8]
 
-    with open(f"{PASTE_DIR}/{paste_id}.txt", "w", encoding="utf-8") as f:
+    with open(f"{PASTE_DIR}/{paste_id}.txt", "w") as f:
         f.write(content)
-
-    PASTES[paste_id] = True
-    save_json(PASTES_FILE, PASTES)
 
     return jsonify({
         "id": paste_id,
@@ -71,76 +115,44 @@ def create_paste():
         "view": f"/view/{paste_id}"
     })
 
-# ---------------- RAW (DARK MODE) ----------------
+# ---------------- RAW ----------------
 
-@app.route("/raw/<paste_id>")
-def raw(paste_id):
-    file_path = f"{PASTE_DIR}/{paste_id}.txt"
-
-    if not os.path.exists(file_path):
-        return "❌ Paste not found", 404
-
-    with open(file_path, "r", encoding="utf-8") as f:
-        content = f.read()
+@app.route("/raw/<id>")
+def raw(id):
+    try:
+        with open(f"{PASTE_DIR}/{id}.txt") as f:
+            content = f.read()
+    except:
+        return "Not found"
 
     return f"""
     <style>
-    body {{
-        background:#0f0f0f;
-        color:#00ff88;
-        font-family: monospace;
-        padding:20px;
-        white-space: pre-wrap;
-    }}
+    body {{ background:#0f0f0f; color:#00ff88; font-family:monospace; padding:20px; }}
     </style>
     {content}
     """
 
-# ---------------- VIEW (PRETTY UI) ----------------
+# ---------------- VIEW ----------------
 
-@app.route("/view/<paste_id>")
-def view(paste_id):
-    file_path = f"{PASTE_DIR}/{paste_id}.txt"
-
-    if not os.path.exists(file_path):
-        return "❌ Paste not found", 404
-
-    with open(file_path, "r", encoding="utf-8") as f:
-        content = f.read()
+@app.route("/view/<id>")
+def view(id):
+    try:
+        with open(f"{PASTE_DIR}/{id}.txt") as f:
+            content = f.read()
+    except:
+        return "Not found"
 
     return render_template_string("""
     <style>
-    body {
-        background:#111;
-        color:white;
-        font-family:sans-serif;
-        padding:20px;
-    }
-    .box {
-        background:#1e1e1e;
-        padding:15px;
-        border-radius:8px;
-        white-space:pre-wrap;
-        font-family:monospace;
-    }
-    a {
-        color:#00ffcc;
-    }
+    body { background:#111; color:white; font-family:sans-serif; }
+    .box { background:#1e1e1e; padding:15px; border-radius:8px; white-space:pre-wrap; }
     </style>
 
-    <h2>💀 Paste Viewer</h2>
-
+    <h2>💀 Paste</h2>
     <div class="box">{{content}}</div>
-
     <br>
-    <a href="/raw/{{id}}">View Raw</a>
-    """, content=content, id=paste_id)
-
-# ---------------- HOME ----------------
-
-@app.route("/")
-def home():
-    return "💀 Paste API Running"
+    <a href="/raw/{{id}}">Raw</a>
+    """, content=content, id=id)
 
 # ---------------- RUN ----------------
 
